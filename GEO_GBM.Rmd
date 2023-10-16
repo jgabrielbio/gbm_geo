@@ -1,0 +1,169 @@
+---
+  title:" BIF004 - Pipeline for Clinical Data, Exploratory Analysis
+          and DEA applied to Glioblastoma Multiforme based on RNA Seq."
+  author: João Gabriel - 05/10/2023
+output:
+  pdf_document: default
+html_document: 
+  default
+github_document: 
+  df_print: paged
+html_preview: FALSE
+keep_html: TRUE
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_format = "all") })    
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+Rewiring of the promoter-enhancer interactome and regulatory landscape in glioblastoma orchestrates gene expression underlying the neurogliomal synaptic communication [OPC_RNA-seq].
+
+Expression profiling by high throughput sequencing
+
+<https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE234126>,
+
+This pipeline if based on the Workflow :
+
+<https://www.bioconductor.org/packages/devel/workflows/vignettes/maEndToEnd/inst/doc/MA-Workflow.html>
+
+```{r error=TRUE, message=FALSE, warning=FALSE, include=FALSE, purl=FALSE, results='hide'}
+## This chunk automatically generates a text .R version of this script when running within knitr.
+input  = knitr::current_input()  # filename of input document
+output = paste(tools::file_path_sans_ext(input), 'R', sep = '.')
+try(knitr::purl(input,output,documentation=2,quiet=T), silent = TRUE)
+# Avoid duplicate label error of knitr::purl
+options(knitr.duplicate.label = 'allow')
+# Code to browse the markdown file with renderized images.
+knitr::opts_chunk$set(
+  fig.path = "figs/render-"
+)
+```
+
+###### Installing/Loading packages------------------------
+
+```{r message=FALSE, warning=FALSE}
+
+packages_bioconductor <- c("GEOquery", "DESeq2", "Glimma", "ArrayExpress", "oligo", "biobroom", "Biobase")
+package.check <- lapply(packages_bioconductor, FUN = function(x) {
+  if (!require(x, character.only = TRUE)) {
+    BiocManager::install(x, dependencies = TRUE)
+    library(x, character.only = TRUE)
+  }
+})
+packages_cran = c("DT", "tidyverse","dplyr", "tibble", "skimr", "finalfit", "tableone", "rio", "stringr", "data.table", "genefilter", "stats", "ggpubr", "ggplot2", "RColorBrewer", "ggrepel", "pheatmap","ComplexHeatmap", "curl", "urltools", "xml2", "fs", "rtracklayer","gapminder", "ggstatsplot", "annotables")
+package.check <- lapply(packages_cran, FUN = function(x) {
+  if (!require(x, character.only = TRUE)) {
+    install.packages(x, dependencies = TRUE)
+    library(x, character.only = TRUE)
+  }
+})
+rm(package.check, packages_bioconductor, packages_cran)
+
+```
+
+##### Clinical Data from GEO ----------------------------
+
+```{r message=FALSE, warning=FALSE}
+serie_2023_mat <- getGEO("GSE234126", GSEMatrix = TRUE)
+var_2023 <- (pData(phenoData(serie_2023_mat[[1]])))
+# CHECKING DATASET
+class(var_2023)
+dim(var_2023)
+glimpse(var_2023)
+skim(var_2023)
+view(var_2023)
+# Removing useless group
+var_2023 <- var_2023 %>%
+  select(!(starts_with(c("contact","characteristics_ch1")))) %>%
+  select(!c("time:ch1", "treatment:ch1", "cell line:ch1")) %>% 
+  mutate(title = replace(title, title == 'OPC, rep1 (RNAseq)', 'rep1')) %>%
+  mutate(title = replace(title, title == 'OPC, rep2 (RNAseq)', 'rep2'))
+ch1 <- var_2023 %>%
+  select(ends_with(c(":ch1")))
+names(var_2023)[19] <- "reference_genome"
+names(var_2023)[31] <- "genotype"
+names(var_2023)[30] <- "cell_type"
+skim(var_2023)
+# FINAL FIT
+#modified_cols <- c(data_processing.2 = "Reference Genome", cell type:ch1 = "cell_type_ch1", genotype:ch1 = "genotype_ch1")
+explanatory <- var_2023 %>%
+  select(c(type, organism_ch1, reference_genome, instrument_model, library_source, library_strategy, genotype, cell_type)) %>%
+  names
+dependent <- 'title'
+clinic_descript <- var_2023 %>%
+  summary_factorlist(dependent, explanatory,
+                     na_to_p = FALSE,
+                     na_include = FALSE, add_dependent_label = TRUE
+  )
+# visualization
+clinic_descript
+
+```
+
+##### DEA Analysis ----------------------------
+
+```{r message=FALSE, warning=FALSE}
+## creating a dataset with expression values from experiments
+download_dir <- fs::path(".data_tmp")
+path <- paste0(download_dir, "/GSE234126/")
+ff <- list.files(path = path, include.dirs = FALSE)
+if (length(ff) < 1) {
+  GSE234126_path <- getGEOSuppFiles("GSE234126", baseDir = download_dir)
+} 
+ff <- paste0(path, list.files(path = path))
+counts <- read.csv(ff)
+# Checking duplicate entries
+sum(duplicated(counts))
+# Arranging expression and annotation datasets
+exp.GSE234126 <- counts 
+rm(path, ff, counts)
+rm(download_dir)
+exp.GSE234126.numeric <- exp.GSE234126 %>% select(where(is.numeric))
+
+```
+
+# Checking the intensity distributions of the individual arrays, it they are quite different, this indicates the need for an appropriate normalization.
+
+```{r,  fig.height = 10, fig.width=15}
+oligo::boxplot(exp.GSE234126.numeric, target = "core", 
+               main = "Boxplot of log2-intensitites for the raw data")
+```
+
+# Running DESeq2 Differential Expression
+
+References:
+
+<https://bioinformatics-core-shared-training.github.io/cruk-summer-school-2018/RNASeq2018/html/02_Preprocessing_Data.nb.html>
+
+<https://hbctraining.github.io/DGE_workshop_salmon/lessons/04_DGE_DESeq2_analysis.html>
+
+<http://bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html>
+
+<https://bioconductor.github.io/BiocWorkshops/rna-seq-data-analysis-with-deseq2.html>
+
+<http://bioconductor.org/packages/release/bioc/vignettes/Glimma/inst/doc/Glimma.pdf>
+
+<!-- ```{r} -->
+
+<!-- save.image("pipeline_EGEOD18494.RData") --> <!-- ``` -->
+
+<!-- # Pre-processsing RNA-seq data -->
+
+<!--     Based on:  -->
+
+<!--      https://bioinformatics-core-shared-training.github.io/cruk-summer-school-2018/RNASeq2018/html/02_Preprocessing_Data.nb.html  -->
+
+<!-- # Convert counts to DESeqDataSet object -->
+
+\#' <!-- # create the DESeqDataSet object -->
+
+countData \<- exp.GSE234126.numeric %\>% select(OPC_1, OPC_2)
+
+names(countData) \<- NULL\
+
+#Do not have a study design to run DESeq...
+
+ddsObj \<- DESeqDataSetFromMatrix(countData, colData = var_2023 ) \#'
+
+Normalisation \--\> \#' \#' \#' <!-- ```{r} --> \#' <!-- # Apply normalisation to DDS object due to boxplot differences --> ddsObj \<- estimateSizeFactors(ddsObj) \#' <!-- ``` --> \#' \#' \#' <!-- ```{r} --> [ddsObj\@colData](mailto:ddsObj@colData){.email}$sizeFactor #' <!-- ``` --> #' #' #' <!-- # Interactive StripChart with Glimma --> #' #' #' <!-- ```{r} --> ddsObj <- DESeq(ddsObj) res <- results(ddsObj) #' <!-- res.shr <- DESeq2::lfcShrink(ddsObj, coef=2, res=res) --> #' #' <!-- shrink.deseq <- as.data.frame(res.shr) %>% --> #' <!-- rownames_to_column("ensgene") %>% --> #' <!-- left_join(anno.GSE234126, by="ensgene") %>% --> #' <!-- rename(logFC=log2FoldChange, FDR=padj) --> #' #' <!-- ``` --> #' #' #' <!-- ```{r} --> #' <!-- summary(res) --> #' <!-- # out of 19265 with nonzero total read count --> #' <!-- # adjusted p-value < 0.1 --> #' <!-- # LFC > 0 (up) : 569, 3% --> #' <!-- # LFC < 0 (down) : 24, 0.12% --> #' <!-- # outliers [1] : 0, 0% --> #' <!-- # low counts [2] : 751, 3.9% --> #' <!-- # (mean count < 0) --> #' <!-- # [1] see 'cooksCutoff' argument of ?results --> #' <!-- # [2] see 'independentFiltering' argument of ?results --> #' #' <!-- ``` --> #' #' <!-- ```{r} --> #' <!-- DESeq2::plotMA(res, ylim=c(-5,5)) --> #' <!-- ``` --> #' #' #' <!-- ```{r} --> #' #' <!-- # first remove the filtered genes (FDR=NA) and create a -log10(FDR) column --> #' <!-- filtTab.deseq <- shrink.deseq %>% --> #' <!-- filter(!is.na(FDR)) %>% --> #' <!-- mutate(`-log10(FDR)` = -log10(FDR)) --> #' #' <!-- filtTab.deseq <- filtTab.deseq %>% --> #' <!-- mutate(`-log10(FDR)`=pmin(`-log10(FDR)`)) --> #' <!-- ``` --> #' #' <!-- ```{r} --> #' <!-- res.df <- as.data.frame(res.shr) --> #' <!-- res.df$log10MeanNormCount <- log10(res.df$baseMean + 1) --> #' <!-- idx <-(rowSums(counts(ddsObj)) > 0) --> #' <!-- res.df <- res.df[idx,] --> #' <!-- res.df$padj[is.na(res.df$padj)] <- 1 --> #' #' <!-- status <- as.numeric(res.df$padj < .1) –> #' #' <!-- glMDPlot(res.df[idx,], --> \#' <!--          xval="baseMean", --> \#' <!--          yval="log2FoldChange", --> \#' <!--          counts=counts(ddsObj)[idx,], --> \#' <!--          anno=data.frame(ensgene=rownames(ddsObj)[idx]), --> \#' <!--          groups=ddsObj$condition, --> \#' <!--          samples=colnames(ddsObj), --> \#' <!--          status=status, --> \#' <!--          display.columns=c("ensgene"), --> \#' <!--          folder = "volcano_GSE234126.deseq_DE", --> \#' <!--          launch=FALSE) --> \#' \#' <!-- ``` --> \#' \#' \#' <!-- ```{r} --> \#' <!-- de <- as.integer(filtTab.deseq$FDR <= 0.05) --> \#' \#' <!-- normCounts <- log2(counts(ddsObj)) --> \#' <!-- filtCounts <- normCounts[filtTab.deseq$ensgene,] --> \#' \#' <!-- glXYPlot( --> \#' <!--   x = filtTab.deseq$logFC, --> \#' <!--   y = -log10(filtTab.deseq$FDR), --> \#' <!--   xlab = "logFC", --> \#' <!--   ylab = "FDR", --> \#' <!--   main = "Norm.vs.Hypo", --> \#' <!--   counts = filtCounts, --> \#' <!--   groups = data_description$condition, --> \#' <!--   status = de, --> \#' <!--   anno = filtTab.deseq[, c("symbol","ensgene", "description")], --> \#' <!--   folder = "volcano_GSE234126.deseq_DE", --> \#' <!--   launch = F --> \#' <!-- ) --> \#' <!-- ``` -->
